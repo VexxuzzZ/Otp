@@ -1,0 +1,51 @@
+{
+  "name": "ivasms-bot",
+  "version": "1.0.0",
+  "description": "IVASMS Telegram Bot dengan Menu Lengkap",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "nodemon bot.js",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "setup": "npm install",
+    "clean": "rm -rf node_modules package-lock.json"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "ivasms",
+    "sms",
+    "otp",
+    "automation",
+    "notification"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.0",
+    "cheerio": "^1.0.0-rc.12",
+    "telegraf": "^4.12.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=16.0.0",
+    "npm": ">=8.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/ivasms-bot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yourusername/ivasms-bot/issues"
+  },
+  "homepage": "https://github.com/yourusername/ivasms-bot#readme",
+  "keywords": [
+    "telegram-bot",
+    "ivasms",
+    "sms-forwarder",
+    "otp-service",
+    "automation"
+  ]
+}
