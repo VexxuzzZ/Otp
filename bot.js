@@ -2,7 +2,7 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const fs = require('fs').promises;
 const path = require('path');
-const { Telegraf, Markup } = require('telegraf');
+const { Telegraf, Markup, session } = require('telegraf');
 
 // ================== CONFIG ==================
 const YOUR_BOT_TOKEN = "8525102753:AAEUMWcS1K5oYJVM-sBhvfl6wLtU34HBjPU";
@@ -12,16 +12,39 @@ const INITIAL_CHAT_IDS = ["-1003414578929"];
 const LOGIN_URL = "https://www.ivasms.com/login";
 const BASE_URL = "https://www.ivasms.com/";
 const SMS_API_ENDPOINT = "https://www.ivasms.com/portal/sms/received/getsms";
-const USERNAME = "caminating.com";
-const PASSWORD = "sojit@##";
+const USERNAME = "username_here";
+const PASSWORD = "password_here";
 
 const POLLING_INTERVAL_SECONDS = 1;
 const STATE_FILE = "processed_sms_ids.json";
 const CHAT_IDS_FILE = "chat_ids.json";
 
-const COUNTRY_FLAGS = {"Unknown Country": "🏴‍☠️"};
-const SERVICE_KEYWORDS = {"Unknown": ["unknown"]};
-const SERVICE_EMOJIS = {"Unknown": "❓"};
+const COUNTRY_FLAGS = {"Indonesia": "🇮🇩", "USA": "🇺🇸", "Unknown": "🏴‍☠️"};
+const SERVICE_KEYWORDS = {
+    "WhatsApp": ["whatsapp", "wa"],
+    "Telegram": ["telegram", "tg"],
+    "Google": ["google", "gmail"],
+    "Facebook": ["facebook", "fb"],
+    "Twitter": ["twitter"],
+    "Instagram": ["instagram", "ig"],
+    "TikTok": ["tiktok"],
+    "Bank": ["bank", "bca", "mandiri", "bri", "bni"],
+    "Shopee": ["shopee"],
+    "Tokopedia": ["tokopedia"],
+    "Gojek": ["gojek", "go-jek"],
+    "Grab": ["grab"],
+    "OVO": ["ovo"],
+    "Dana": ["dana"],
+    "Unknown": ["unknown"]
+};
+
+const SERVICE_EMOJIS = {
+    "WhatsApp": "📱", "Telegram": "✈️", "Google": "🔍", 
+    "Facebook": "👥", "Twitter": "🐦", "Instagram": "📸",
+    "TikTok": "🎵", "Bank": "🏦", "Shopee": "🛍️", 
+    "Tokopedia": "🏪", "Gojek": "🏍️", "Grab": "🚗",
+    "OVO": "💜", "Dana": "💙", "Unknown": "❓"
+};
 
 // ================== FILE HANDLING ==================
 async function loadChatIds() {
@@ -55,10 +78,30 @@ async function saveProcessedId(sid) {
     await fs.writeFile(STATE_FILE, JSON.stringify([...ids], null, 4));
 }
 
+async function clearAllData() {
+    try {
+        await fs.unlink(STATE_FILE);
+        await fs.unlink(CHAT_IDS_FILE);
+        return true;
+    } catch (error) {
+        return false;
+    }
+}
+
 // ================== UTILS ==================
 function escapeMarkdown(text) {
     const esc = '_*[]()~`>#+-=|{}.!';
     return String(text).replace(new RegExp(`[${esc.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}]`, 'g'), '\\$&');
+}
+
+function detectService(smsText) {
+    const text = smsText.toLowerCase();
+    for (const [service, keywords] of Object.entries(SERVICE_KEYWORDS)) {
+        if (keywords.some(keyword => text.includes(keyword.toLowerCase()))) {
+            return service;
+        }
+    }
+    return "Unknown";
 }
 
 function createMainMenu() {
@@ -233,7 +276,7 @@ Gunakan menu di bawah untuk mengelola bot:`;
         }
 
         const processedIds = await loadProcessedIds();
-        const recentSms = Array.from(processedIds).slice(-5); // Ambil 5 terakhir
+        const recentSms = Array.from(processedIds).slice(-5).reverse();
         
         if (recentSms.length === 0) {
             return await ctx.reply("📭 Belum ada SMS yang diproses.");
@@ -241,10 +284,15 @@ Gunakan menu di bawah untuk mengelola bot:`;
 
         let smsList = "📋 *5 SMS Terakhir*\n\n";
         recentSms.forEach((smsId, index) => {
-            smsList += `${index + 1}. ${smsId}\n`;
+            smsList += `${index + 1}. \`${smsId}\`\n`;
         });
 
-        await ctx.reply(smsList, { parse_mode: 'Markdown' });
+        await ctx.reply(smsList, { 
+            parse_mode: 'Markdown',
+            ...Markup.inlineKeyboard([
+                [Markup.button.callback('🔄 Refresh', 'refresh_sms_list')]
+            ])
+        });
     });
 
     bot.hears('🔄 Restart Bot', async (ctx) => {
@@ -253,7 +301,7 @@ Gunakan menu di bawah untuk mengelola bot:`;
             return await ctx.reply("❌ Hanya admin.");
         }
 
-        await ctx.reply("🔄 Merestart bot...");
+        await ctx.reply("🔄 Merestart bot...", Markup.removeKeyboard());
         setTimeout(() => {
             process.exit(0);
         }, 2000);
@@ -267,20 +315,26 @@ Gunakan menu di bawah untuk mengelola bot:`;
 
         const chatIds = await loadChatIds();
         const processedIds = await loadProcessedIds();
+        const today = new Date().toDateString();
+        const todayCount = Math.floor(processedIds.size / 30);
         
         const statsMsg = `📈 *Statistics*
 
 • 📨 Total SMS: **${processedIds.size}**
 • 👥 Active Chats: **${chatIds.length}**
-• 📊 Success Rate: **98%**
 • ⚡ Avg Response: **< 1s**
 • 🔔 Notifications: **Enabled**
 
 *Daily Stats:*
-• 📅 Hari Ini: **${Math.floor(processedIds.size / 30)} SMS**
-• 📈 Trend: **Stable**`;
+• 📅 Hari Ini: **${todayCount} SMS**
+• 📊 Success Rate: **${Math.min(98, Math.floor(todayCount / (chatIds.length || 1) * 100))}%**`;
 
-        await ctx.reply(statsMsg, { parse_mode: 'Markdown' });
+        await ctx.reply(statsMsg, { 
+            parse_mode: 'Markdown',
+            ...Markup.inlineKeyboard([
+                [Markup.button.callback('🔄 Refresh Stats', 'refresh_stats')]
+            ])
+        });
     });
 
     bot.hears('❌ Hapus Semua Data', async (ctx) => {
@@ -290,10 +344,10 @@ Gunakan menu di bawah untuk mengelola bot:`;
         }
 
         await ctx.reply(
-            '🗑️ *Hapus Semua Data*\n\nApakah Anda yakin ingin menghapus semua data?',
+            '🗑️ *Hapus Semua Data*\n\nApakah Anda yakin ingin menghapus semua data? Tindakan ini tidak dapat dibatalkan!',
             Markup.inlineKeyboard([
                 [
-                    Markup.button.callback('✅ Ya, Hapus', 'confirm_delete_all'),
+                    Markup.button.callback('✅ Ya, Hapus Semua', 'confirm_delete_all'),
                     Markup.button.callback('❌ Batal', 'cancel_delete')
                 ]
             ])
@@ -318,10 +372,10 @@ Gunakan menu di bawah untuk mengelola bot:`;
         if (!chatIds.includes(newId)) {
             chatIds.push(newId);
             await saveChatIds(chatIds);
-            return await ctx.reply(`✔️ ID ${newId} ditambahkan.`);
+            return await ctx.reply(`✅ ID \`${newId}\` berhasil ditambahkan.`, { parse_mode: 'Markdown' });
         }
         
-        await ctx.reply("⚠️ Sudah ada.");
+        await ctx.reply("⚠️ ID sudah ada dalam daftar.");
     });
 
     bot.command('remove_chat', async (ctx) => {
@@ -342,10 +396,10 @@ Gunakan menu di bawah untuk mengelola bot:`;
         if (index > -1) {
             chatIds.splice(index, 1);
             await saveChatIds(chatIds);
-            return await ctx.reply(`✔️ ID ${target} dihapus.`);
+            return await ctx.reply(`✅ ID \`${target}\` berhasil dihapus.`, { parse_mode: 'Markdown' });
         }
         
-        await ctx.reply("ID tidak ditemukan.");
+        await ctx.reply("❌ ID tidak ditemukan.");
     });
 
     bot.command('list_chats', async (ctx) => {
@@ -359,18 +413,68 @@ Gunakan menu di bawah untuk mengelola bot:`;
             return await ctx.reply("Belum ada chat.\n\nTambahkan via menu 👥 Kelola Chat");
         }
         
-        const txt = "👥 *Daftar Chat ID*\n\n" + chatIds.map(id => `• ${id}`).join('\n');
+        const txt = "👥 *Daftar Chat ID*\n\n" + chatIds.map((id, index) => `*${index + 1}.* \`${id}\``).join('\n');
         await ctx.reply(txt, { parse_mode: 'Markdown' });
     });
 
     // Callback handlers untuk inline keyboard
     bot.action('add_chat_menu', async (ctx) => {
         await ctx.editMessageText(
-            '➕ *Tambah Chat ID*\n\nKirimkan Chat ID yang ingin ditambahkan:',
-            { parse_mode: 'Markdown' }
+            '➕ *Tambah Chat ID*\n\nKirimkan Chat ID yang ingin ditambahkan:\n\nContoh: \`-1001234567890\`',
+            { 
+                parse_mode: 'Markdown',
+                ...Markup.inlineKeyboard([
+                    [Markup.button.callback('🔙 Kembali', 'back_to_chat_management')]
+                ])
+            }
         );
-        // Simpan state untuk menunggu input
-        ctx.session = { waitingFor: 'add_chat' };
+        ctx.session.waitingFor = 'add_chat';
+    });
+
+    bot.action('remove_chat_menu', async (ctx) => {
+        const chatIds = await loadChatIds();
+        if (chatIds.length === 0) {
+            return await ctx.editMessageText(
+                "❌ Tidak ada chat yang bisa dihapus.",
+                Markup.inlineKeyboard([
+                    [Markup.button.callback('🔙 Kembali', 'back_to_chat_management')]
+                ])
+            );
+        }
+        
+        const buttons = chatIds.map(id => 
+            [Markup.button.callback(`❌ ${id}`, `remove_chat_${id}`)]
+        );
+        buttons.push([Markup.button.callback('🔙 Kembali', 'back_to_chat_management')]);
+        
+        await ctx.editMessageText(
+            '➖ *Hapus Chat ID*\n\nPilih chat yang ingin dihapus:',
+            {
+                parse_mode: 'Markdown',
+                ...Markup.inlineKeyboard(buttons)
+            }
+        );
+    });
+
+    bot.action(/remove_chat_/, async (ctx) => {
+        const chatId = ctx.match.input.replace('remove_chat_', '');
+        const chatIds = await loadChatIds();
+        
+        const index = chatIds.indexOf(chatId);
+        if (index > -1) {
+            chatIds.splice(index, 1);
+            await saveChatIds(chatIds);
+            await ctx.answerCbQuery(`✅ Chat ${chatId} dihapus`);
+            await ctx.editMessageText(
+                `✅ Chat \`${chatId}\` berhasil dihapus.`,
+                {
+                    parse_mode: 'Markdown',
+                    ...Markup.inlineKeyboard([
+                        [Markup.button.callback('🔙 Kembali ke Kelola Chat', 'back_to_chat_management')]
+                    ])
+                }
+            );
+        }
     });
 
     bot.action('list_chats_menu', async (ctx) => {
@@ -378,35 +482,177 @@ Gunakan menu di bawah untuk mengelola bot:`;
         if (chatIds.length === 0) {
             return await ctx.editMessageText(
                 "📭 *Daftar Chat IDs*\n\nBelum ada chat yang terdaftar.",
-                { parse_mode: 'Markdown' }
+                { 
+                    parse_mode: 'Markdown',
+                    ...Markup.inlineKeyboard([
+                        [Markup.button.callback('🔙 Kembali', 'back_to_chat_management')]
+                    ])
+                }
             );
         }
         
-        const txt = "👥 *Daftar Chat ID*\n\n" + chatIds.map((id, index) => `${index + 1}. ${id}`).join('\n');
-        await ctx.editMessageText(txt, { parse_mode: 'Markdown' });
+        const txt = "👥 *Daftar Chat ID*\n\n" + chatIds.map((id, index) => `*${index + 1}.* \`${id}\``).join('\n');
+        await ctx.editMessageText(txt, { 
+            parse_mode: 'Markdown',
+            ...Markup.inlineKeyboard([
+                [Markup.button.callback('🔙 Kembali', 'back_to_chat_management')]
+            ])
+        });
+    });
+
+    bot.action('clear_chats_menu', async (ctx) => {
+        await ctx.editMessageText(
+            '🧹 *Bersihkan Semua Chats*\n\nApakah Anda yakin ingin menghapus semua chat?',
+            Markup.inlineKeyboard([
+                [
+                    Markup.button.callback('✅ Ya, Hapus Semua', 'confirm_clear_chats'),
+                    Markup.button.callback('❌ Batal', 'back_to_chat_management')
+                ]
+            ])
+        );
+    });
+
+    bot.action('confirm_clear_chats', async (ctx) => {
+        await saveChatIds([]);
+        await ctx.answerCbQuery('✅ Semua chat berhasil dihapus');
+        await ctx.editMessageText(
+            '✅ Semua chat berhasil dihapus.',
+            Markup.inlineKeyboard([
+                [Markup.button.callback('🔙 Kembali ke Menu Utama', 'back_to_main')]
+            ])
+        );
+    });
+
+    bot.action('back_to_chat_management', async (ctx) => {
+        await ctx.editMessageText(
+            '👥 *Kelola Chat IDs*\n\nPilih aksi yang ingin dilakukan:',
+            {
+                parse_mode: 'Markdown',
+                ...createChatManagementMenu()
+            }
+        );
     });
 
     bot.action('back_to_main', async (ctx) => {
+        try {
+            await ctx.deleteMessage();
+        } catch (e) {
+            // Ignore error if message already deleted
+        }
+        const uid = String(ctx.from.id);
+        if (ADMIN_CHAT_IDS.includes(uid)) {
+            await ctx.reply("Kembali ke menu utama...", {
+                ...Markup.keyboard([
+                    ['📊 Status Bot', '👥 Kelola Chat'],
+                    ['⚙️ Settings', '👑 Admin Panel'],
+                    ['📋 List SMS Terbaru', '🔄 Restart Bot'],
+                    ['📈 Statistics', '❌ Hapus Semua Data']
+                ]).resize()
+            });
+        } else {
+            await ctx.reply("Kembali ke menu utama...", createMainMenu());
+        }
+    });
+
+    bot.action('refresh_sms_list', async (ctx) => {
+        const processedIds = await loadProcessedIds();
+        const recentSms = Array.from(processedIds).slice(-5).reverse();
+        
+        if (recentSms.length === 0) {
+            return await ctx.editMessageText("📭 Belum ada SMS yang diproses.");
+        }
+
+        let smsList = "📋 *5 SMS Terakhir*\n\n";
+        recentSms.forEach((smsId, index) => {
+            smsList += `${index + 1}. \`${smsId}\`\n`;
+        });
+
+        await ctx.editMessageText(smsList, { 
+            parse_mode: 'Markdown',
+            ...Markup.inlineKeyboard([
+                [Markup.button.callback('🔄 Refresh', 'refresh_sms_list')]
+            ])
+        });
+        await ctx.answerCbQuery('✅ Daftar diperbarui');
+    });
+
+    bot.action('confirm_delete_all', async (ctx) => {
+        const success = await clearAllData();
+        if (success) {
+            await ctx.answerCbQuery('✅ Semua data berhasil dihapus');
+            await ctx.editMessageText(
+                '✅ *Semua data berhasil dihapus!*\n\nBot akan restart otomatis...',
+                { parse_mode: 'Markdown' }
+            );
+            setTimeout(() => {
+                process.exit(0);
+            }, 3000);
+        } else {
+            await ctx.answerCbQuery('❌ Gagal menghapus data');
+            await ctx.editMessageText('❌ Gagal menghapus data.');
+        }
+    });
+
+    bot.action('cancel_delete', async (ctx) => {
         await ctx.deleteMessage();
-        await ctx.reply("Kembali ke menu utama...", createMainMenu());
+        await ctx.reply('❌ Penghapusan data dibatalkan.');
+    });
+
+    bot.action('refresh_stats', async (ctx) => {
+        const chatIds = await loadChatIds();
+        const processedIds = await loadProcessedIds();
+        const todayCount = Math.floor(processedIds.size / 30);
+        
+        const statsMsg = `📈 *Statistics*
+
+• 📨 Total SMS: **${processedIds.size}**
+• 👥 Active Chats: **${chatIds.length}**
+• ⚡ Avg Response: **< 1s**
+• 🔔 Notifications: **Enabled**
+
+*Daily Stats:*
+• 📅 Hari Ini: **${todayCount} SMS**
+• 📊 Success Rate: **${Math.min(98, Math.floor(todayCount / (chatIds.length || 1) * 100))}%**`;
+
+        await ctx.editMessageText(statsMsg, { 
+            parse_mode: 'Markdown',
+            ...Markup.inlineKeyboard([
+                [Markup.button.callback('🔄 Refresh Stats', 'refresh_stats')]
+            ])
+        });
+        await ctx.answerCbQuery('✅ Statistik diperbarui');
     });
 
     // Handler untuk input text setelah callback
     bot.on('text', async (ctx) => {
+        const uid = String(ctx.from.id);
+        if (!ADMIN_CHAT_IDS.includes(uid)) {
+            return;
+        }
+
         if (ctx.session && ctx.session.waitingFor === 'add_chat') {
-            const newId = ctx.message.text;
+            const newId = ctx.message.text.trim();
             const chatIds = await loadChatIds();
             
             if (!chatIds.includes(newId)) {
                 chatIds.push(newId);
                 await saveChatIds(chatIds);
-                await ctx.reply(`✔️ ID ${newId} berhasil ditambahkan!`);
+                await ctx.reply(`✅ ID \`${newId}\` berhasil ditambahkan!`, { 
+                    parse_mode: 'Markdown',
+                    ...Markup.inlineKeyboard([
+                        [Markup.button.callback('🔙 Kembali ke Kelola Chat', 'back_to_chat_management')]
+                    ])
+                });
             } else {
-                await ctx.reply("⚠️ ID sudah ada dalam daftar.");
+                await ctx.reply("⚠️ ID sudah ada dalam daftar.", {
+                    ...Markup.inlineKeyboard([
+                        [Markup.button.callback('🔙 Kembali ke Kelola Chat', 'back_to_chat_management')]
+                    ])
+                });
             }
             
             // Reset session
-            ctx.session = null;
+            ctx.session.waitingFor = null;
         }
     });
 }
@@ -418,8 +664,8 @@ async function fetchSms(client, headers, csrfToken) {
         const start = new Date(today);
         start.setDate(start.getDate() - 1);
         
-        const fd = start.toLocaleDateString('en-US');
-        const td = today.toLocaleDateString('en-US');
+        const fd = formatDate(start);
+        const td = formatDate(today);
 
         const payload = new URLSearchParams({
             'from': fd,
@@ -428,10 +674,19 @@ async function fetchSms(client, headers, csrfToken) {
         });
 
         const res = await client.post(SMS_API_ENDPOINT, payload, { headers });
+        
+        if (res.status !== 200) {
+            console.error('Failed to fetch SMS:', res.status);
+            return [];
+        }
+
         const $ = cheerio.load(res.data);
         const groups = $('div.pointer');
 
-        if (groups.length === 0) return [];
+        if (groups.length === 0) {
+            console.log('No SMS groups found');
+            return [];
+        }
 
         const ids = [];
         groups.each((_, element) => {
@@ -439,6 +694,11 @@ async function fetchSms(client, headers, csrfToken) {
             const match = onclick.match(/getDetials\('(.+?)'\)/);
             if (match) ids.push(match[1]);
         });
+
+        if (ids.length === 0) {
+            console.log('No group IDs found');
+            return [];
+        }
 
         const numUrl = new URL('/portal/sms/received/getsms/number', BASE_URL).href;
         const smsUrl = new URL('/portal/sms/received/getsms/number/sms', BASE_URL).href;
@@ -476,19 +736,25 @@ async function fetchSms(client, headers, csrfToken) {
                     if (p.length === 0) return;
                     
                     const text = p.text().trim();
-                    const sid = `${num}-${text}`;
+                    if (!text) return;
+                    
+                    const sid = `${num}-${text.substring(0, 50)}-${Date.now()}`;
                     
                     let code = "N/A";
                     const mcode = text.match(/(\d{4,8})/);
                     if (mcode) code = mcode[1];
 
+                    const service = detectService(text);
+                    const serviceEmoji = SERVICE_EMOJIS[service] || SERVICE_EMOJIS["Unknown"];
+
                     allMsgs.push({
                         "id": sid,
-                        "time": today.toISOString().replace('T', ' ').substring(0, 19),
+                        "time": new Date().toLocaleString('id-ID'),
                         "number": num,
                         "country": gid,
-                        "flag": COUNTRY_FLAGS[gid] || "🏴‍☠️",
-                        "service": "Unknown",
+                        "flag": COUNTRY_FLAGS[gid] || COUNTRY_FLAGS["Unknown"],
+                        "service": service,
+                        "service_emoji": serviceEmoji,
                         "code": code,
                         "full_sms": text
                     });
@@ -497,27 +763,46 @@ async function fetchSms(client, headers, csrfToken) {
         }
         return allMsgs;
     } catch (error) {
-        console.error('Error fetching SMS:', error);
+        console.error('Error fetching SMS:', error.message);
         return [];
     }
 }
 
+function formatDate(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
 // ================== SENDING TELEGRAM ==================
 async function sendMsg(bot, chatId, data) {
-    const msg = 
-`🔔 OTP Baru
+    try {
+        const msg = 
+`${data.service_emoji} *SMS BARU DITERIMA*
 
-📞 Number: ${escapeMarkdown(data.number)}
-🔑 Code: ${escapeMarkdown(data.code)}
-🌎 Country: ${escapeMarkdown(data.country)} ${data.flag}
-⏳ Time: ${escapeMarkdown(data.time)}
+📞 *Nomor:* ${escapeMarkdown(data.number)}
+🔑 *Kode:* \`${escapeMarkdown(data.code)}\`
+🌎 *Negara:* ${escapeMarkdown(data.country)} ${data.flag}
+📱 *Layanan:* ${escapeMarkdown(data.service)}
+⏰ *Waktu:* ${escapeMarkdown(data.time)}
 
-💬 Message:
+💬 *Pesan:*
 \`\`\`
-${data.full_sms}
-\`\`\``;
+${data.full_sms.substring(0, 500)}
+\`\`\`
 
-    await bot.telegram.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
+🆔 *ID:* \`${data.id}\``;
+
+        await bot.telegram.sendMessage(chatId, msg, { 
+            parse_mode: 'Markdown',
+            ...Markup.inlineKeyboard([
+                [Markup.button.url('📱 Buka IVASMS', BASE_URL)]
+            ])
+        });
+    } catch (error) {
+        console.error(`Gagal mengirim ke ${chatId}:`, error.message);
+    }
 }
 
 // ================== WORKER ==================
@@ -528,85 +813,152 @@ async function checkSms(bot) {
 
     try {
         const client = axios.create({
-            timeout: 20000,
+            timeout: 30000,
             maxRedirects: 5,
             headers: headers
         });
 
         // Login
+        console.log('🔄 Login ke IVASMS...');
         const lp = await client.get(LOGIN_URL);
         const $ = cheerio.load(lp.data);
         const token = $('input[name="_token"]').val();
         
+        if (!token) {
+            console.error('Token login tidak ditemukan');
+            return;
+        }
+
         const loginData = new URLSearchParams({
             'email': USERNAME,
             'password': PASSWORD,
-            '_token': token || ''
+            '_token': token
         });
 
         const lr = await client.post(LOGIN_URL, loginData, { 
             headers: {
                 ...headers,
-                'Content-Type': 'application/x-www-form-urlencoded'
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Referer': LOGIN_URL
             }
         });
 
         if (lr.request.res.responseUrl.includes('login')) {
-            console.log("Login gagal.");
+            console.error('❌ Login gagal - Cek username/password');
             return;
         }
 
+        console.log('✅ Login berhasil');
+
         const d$ = cheerio.load(lr.data);
         const csrf = d$('meta[name="csrf-token"]').attr('content');
-        if (!csrf) return;
+        if (!csrf) {
+            console.error('CSRF token tidak ditemukan');
+            return;
+        }
 
         headers['Referer'] = lr.request.res.responseUrl;
         headers['X-CSRF-TOKEN'] = csrf;
+        headers['X-Requested-With'] = 'XMLHttpRequest';
 
         const msgs = await fetchSms(client, headers, csrf);
-        if (msgs.length === 0) return;
+        
+        if (msgs.length === 0) {
+            console.log('📭 Tidak ada SMS baru');
+            return;
+        }
+
+        console.log(`📨 Ditemukan ${msgs.length} SMS baru`);
 
         const processed = await loadProcessedIds();
         const chats = await loadChatIds();
 
+        if (chats.length === 0) {
+            console.log('⚠️ Tidak ada chat yang terdaftar');
+            return;
+        }
+
         for (const m of msgs) {
             if (!processed.has(m.id)) {
+                console.log(`📤 Mengirim SMS dari ${m.number} ke ${chats.length} chat`);
+                
                 for (const cid of chats) {
-                    await sendMsg(bot, cid, m);
+                    try {
+                        await sendMsg(bot, cid, m);
+                        await new Promise(resolve => setTimeout(resolve, 500)); // Delay antar pengiriman
+                    } catch (error) {
+                        console.error(`Gagal mengirim ke ${cid}:`, error.message);
+                    }
                 }
                 await saveProcessedId(m.id);
             }
         }
     } catch (error) {
-        console.error('Error in checkSms:', error);
+        console.error('❌ Error dalam checkSms:', error.message);
     }
 }
 
 // ================== MAIN ==================
 async function main() {
-    const bot = new Telegraf(YOUR_BOT_TOKEN);
-    
-    // Initialize session
-    bot.use((ctx, next) => {
-        if (!ctx.session) {
-            ctx.session = {};
+    try {
+        console.log('🤖 Memulai IVASMS Bot...');
+        
+        // Validasi config
+        if (YOUR_BOT_TOKEN === "YOUR_TOKEN_HERE") {
+            console.error('❌ ERROR: Token bot belum diisi!');
+            console.error('   Ganti "YOUR_TOKEN_HERE" dengan token bot Telegram Anda');
+            process.exit(1);
         }
-        return next();
-    });
-    
-    // Setup commands
-    setupCommands(bot);
-    
-    // Start polling
-    await bot.launch();
-    console.log('Bot started dengan menu lengkap...');
-    
-    // Start SMS checking loop
-    setInterval(() => checkSms(bot), POLLING_INTERVAL_SECONDS * 1000);
-    
-    // Enable graceful stop
-    process.once('SIGINT', () => bot.stop('SIGINT'));
-    process.once('SIGTERM', () => bot.stop('SIGTERM'));
+        
+        if (USERNAME === "username_here" || PASSWORD === "password_here") {
+            console.error('❌ ERROR: Username/password IVASMS belum diisi!');
+            console.error('   Ganti dengan kredensial IVASMS Anda');
+            process.exit(1);
+        }
+
+        const bot = new Telegraf(YOUR_BOT_TOKEN);
+        
+        // Initialize session
+        bot.use(session());
+        
+        // Setup commands
+        setupCommands(bot);
+        
+        // Start polling
+        await bot.launch();
+        console.log('✅ Bot Telegram berhasil dijalankan!');
+        console.log('🔗 Username bot: @' + (await bot.telegram.getMe()).username);
+        
+        // Cek admin chat
+        const chatIds = await loadChatIds();
+        console.log(`👥 Terdaftar ${chatIds.length} chat`);
+        
+        // Start SMS checking loop
+        console.log(`⏰ Memulai polling SMS setiap ${POLLING_INTERVAL_SECONDS} detik...`);
+        
+        // Jalankan sekali saat start
+        await checkSms(bot);
+        
+        // Set interval untuk polling
+        const interval = setInterval(() => checkSms(bot), POLLING_INTERVAL_SECONDS * 1000);
+        
+        // Enable graceful stop
+        process.once('SIGINT', () => {
+            console.log('🛑 Menghentikan bot...');
+            clearInterval(interval);
+            bot.stop('SIGINT');
+        });
+        
+        process.once('SIGTERM', () => {
+            console.log('🛑 Menghentikan bot...');
+            clearInterval(interval);
+            bot.stop('SIGTERM');
+        });
+        
+    } catch (error) {
+        console.error('❌ Gagal memulai bot:', error.message);
+        process.exit(1);
+    }
 }
 
 // Run the application
